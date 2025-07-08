@@ -1,10 +1,11 @@
 import express from "express"
-import { loginSeller, logoutSeller, registerSeller } from "../controllers/seller.controller.js";
+import { userMiddleware } from "../middleware/user.mid.js";
+import { authorizeRole } from "../middleware/authorizerRole.js";
+import { getTotalRevenue } from "../controllers/seller.controller.js";
+
 
 const router = express.Router();
 
-router.route("/signup").post(registerSeller)
-router.route("/login").post(loginSeller)
-router.route("/logout").delete(logoutSeller)
+router.route("/gettotalrevenue").get(userMiddleware, authorizeRole("seller", "admin"), getTotalRevenue)
 
 export default router;

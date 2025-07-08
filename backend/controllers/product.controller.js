@@ -3,6 +3,7 @@ import { uploadOnCloudinary } from "../utils/cloudinary.js"
 
 
 export const addProduct = async (req, res) => {
+    const userId = req.userId
     try {
         const {
             name,
@@ -83,6 +84,7 @@ export const addProduct = async (req, res) => {
         // ✅ Build product object
 
         const productData = {
+            creator: userId,
             name,
             description,
             brand,

@@ -1,114 +1,175 @@
 import { User } from "../models/user.model.js";
-import bcrypt from "bcrypt"
+import { Product } from "../models/product.model.js";
+import { Order } from "../models/order.model.js"
 import z from "zod"
-import jwt from "jsonwebtoken"
+import mongoose from "mongoose";
 
 
-export const registerSeller = async (req, res) => {
-    const { fullName, email, password } = req.body
+export const becomeSeller = async (req, res) => {
+    const userId = req.userId;
+    const { storeName, businessEmail, address, phone, stripeAccountId } = req.body;
 
-    const sellerSchema = z.object({
-        fullName: z.string().min(3, { message: "Fullname must be atleast 3 character long" }),
-        email: z.string().email(),
-        password: z.string().min(4, { message: "Password must be atleast 4 character long" })
+    if (!storeName || !businessEmail || !address || !phone || !stripeAccountId) {
+        console.log("All fields are required")
+        return res.status(400).json({ errors: "All fileds are required" })
+    }
+
+    const sellerSchema = await z.object({
+        storeName: z.string().min(2, "Store name is too short"),
+        businessEmail: z.string().email("Invalid email"),
+        phone: z.string().regex(/^[6-9]\d{9}$/, {
+            message: "Phone number must be a valid 10-digit Indian number"
+        }),
+        address: z.string().optional()
     })
 
-    const validateData = sellerSchema.safeParse(req.body)
+    const validateSellerSchema = sellerSchema.safeParse(req.body)
 
-    if (!validateData.success) {
-        return res.status(400).json({ errors: validateData.error.issues.map((err) => err.message) })
+    if (!validateSellerSchema.success) {
+        console.log("Invalid data credentials")
+        return res.status(400).json({ errors: validateSellerSchema.error.issues.map((err) => err.message) })
     }
-
-    if (!fullName || !email || !password) {
-        console.log("All feilds are required")
-        return res.status(400).json({ errors: "All feilds are required" })
-    }
-
-    const hashPassword = await bcrypt.hash(password, 10)
-
-    const verifyUser = await User.findOne({ email: email })
-    if (verifyUser) {
-        console.log("User already exist")
-        return res.status(400).json({ errors: "User already exist" })
-    }
-
 
     try {
-        const newUser = new User({
-            fullName,
-            email,
-            password: hashPassword
+        const user = await User.findById(userId)
+
+        if (!user) {
+            console.log("User not found")
+            return res.status(400).json({ errors: "User not found" })
+        }
+
+        Object.assign(user, {
+            role: "seller",
+            storeName,
+            businessEmail,
+            address,
+            phone,
+            stripeAccountId,
+            isVerifiedSeller: false
         })
 
-        await newUser.save()
-        console.log("User registered successfully")
-        return res.status(200).json({ message: "User registered successfully", newUser })
+        await user.save();
+
+        console.log("You have become a seller now", user);
+        return res.status(200).json({ message: "You have become a seller now", user })
     } catch (error) {
-        console.log("Error in registering user", error)
-        return res.status(400).json({ errors: "Error in registering user" })
+        console.log("Failed to register as a seller", error)
+        return res.status(400).json({ errors: "Failed to register as a seller" })
     }
-}
 
-export const loginSeller = async (req, res) => {
-    const { email, password } = req.body;
+};
 
+export const showSellerProducts = async (req, res) => {
+    const userId = req.userId;
 
     try {
+        const products = await Product.find({ creator: userId })
 
-        if (!email || !password) {
-            console.log("All fields are required")
-            return res.status(400).json({ errors: "All fields are required" })
+        if (!products || products.length === 0) {
+            console.log("No products found")
+            return res.status(400).json({ errors: "No products found" })
         }
 
-        const seller = await User.findOne({ email: email })
+        console.log("Seller products fetched successfully", products)
+        return res.status(200).json({ message: "Seller products fetched successfully", products })
 
-        if (!seller) {
-            console.log("Invalid credentials")
-            return res.status(400).json({ errors: "Invalid credentials" })
-        }
-
-        const isPasswordCorrect = await bcrypt.compare(password, seller.password)
-
-        if (!isPasswordCorrect) {
-            console.log("Invalid credentials")
-            return res.status(400).json({ errors: "Invalid credentials" })
-        }
-
-        const token = jwt.sign({
-            id: User._id
-        },
-            process.env.JWT_SECRET_KEY, {
-            expiresIn: "1d"
-        })
-
-        const cookieOptions = {
-            expires: new Date(Date.now() + 24 * 60 * 60 * 1000),
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict"
-        }
-
-        res.cookie("jwt", token, cookieOptions);
-        console.log("Seller logged in successfully", seller)
-        return res.status(200).json({ message: "Seller logged in successfully", seller })
     } catch (error) {
-        console.log("Error in logging Seller", error)
-        return res.status(400).json({ errors: "Error in logging seller", error })
+        console.log("Failed to fetch seller products", error)
+        return res.status(400).json({ errors: "Failed to fetch seller products" })
     }
-}
+};
 
-export const logoutSeller = async (req, res) => {
+export const getSellerOrders = async (req, res) => {
+    const userId = req.userId;
+
     try {
-        res.clearCookie("jwt", {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: true
-        })
+        const orders = await Order.aggregate([
+            { $unwind: "$orderItems" },
 
-        console.log("Seller logged out successfully")
-        return res.status(200).json({ message: "Seller logged out successfully" })
+            {
+                $lookup: {
+                    from: "products",
+                    localField: "orderItems.product",
+                    foreignField: "_id",
+                    as: "productDetails"
+                }
+            },
+
+            { $unwind: "$productDetails" },
+
+            {
+                $match: {
+                    "productDetails.creator": new mongoose.Types.ObjectId(userId)
+                }
+            },
+
+            {
+                $group: {
+                    _id: "$_id",
+                    user: { $first: "$user" },
+                    shippingAddress: { $first: "$shippingAddress" },
+                    paymentMethod: { $first: "$paymentMethod" },
+                    totalPrice: { $first: "$totalPrice" },
+                    orderItems: { $push: "$orderItems" },
+                    createdAt: { $first: "$createdAt" }
+                }
+            },
+
+            { $sort: { createdAt: -1 } }
+        ]);
+
+        return res.status(200).json({ message: "Orders fetched successfully", orders })
     } catch (error) {
-        console.log("Error in logging out seller", error)
-        return res.status(400).json({ errors: "Error in logging out seller", error })
+        console.error("Aggregation error:", error);
+        res.status(500).json({ errors: "Aggregation error:" });
     }
-}
+};
+
+export const getTotalRevenue = async (req, res) => {
+    const userId = req.userId;
+
+    try {
+        console.log(userId)
+        const totalRevenue = await Order.aggregate([
+            { $unwind: "$orderItems" },
+
+            {
+                $lookup: {
+                    from: "products",
+                    localField: "orderItems.product",
+                    foreignField: "_id",
+                    as: "productDetails"
+                }
+            },
+            { $unwind: "$productDetails" },
+
+            {
+                $match: {
+                    "productDetails.creator": new mongoose.Types.ObjectId(userId)
+                }
+            },
+            {
+                $group: {
+                    _id: null,
+                    totalRevenue: {
+                        $sum: {
+                            $multiply: ["$orderItems.quantity", "$productDetails.price"]
+                        }
+                    }
+                }
+            }
+        ]);
+
+        const revenue = totalRevenue[0]?.totalRevenue || 0;
+
+        console.log("Total Revenue fetched successfully", revenue);
+        return res
+            .status(200)
+            .json({ message: "Total Revenue fetched successfully", revenue, totalRevenue });
+    } catch (error) {
+        console.log("Failed to fetch Total Revenue", error);
+        return res
+            .status(400)
+            .json({ errors: "Failed to fetch Total Revenue"});
+    }
+};
